@@ -644,6 +644,8 @@ export async function insertOrder(order: {
   total: number;
   items: unknown[];
   userEmail: string;
+  address?: string;
+  paymentId?: string;
 }): Promise<boolean> {
   if (!supabase) return false;
 
@@ -662,6 +664,8 @@ export async function insertOrder(order: {
       status: "Pending",
       user_email: order.userEmail,
       date: indianDateString,
+      address: order.address ?? null,
+      payment_id: order.paymentId ?? null,
     });
     if (error) {
       console.error("Error inserting Supabase order:", error);

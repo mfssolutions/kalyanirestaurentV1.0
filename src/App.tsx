@@ -1,24 +1,36 @@
 import { useState, useMemo, useEffect } from "react";
-import { Search, ShoppingBag, Filter, ArrowRight, HeartPulse, CheckCircle2, RotateCcw, ChefHat, Home, ClipboardList, Bell, User, Clock, LogOut, MapPin, Sparkles, Navigation, ChevronRight } from "lucide-react";
+import { Search, CheckCircle2, RotateCcw, ChefHat, ClipboardList, Bell, User, LogOut, MapPin, Sparkles, Navigation } from "lucide-react";
 import { MENU_ITEMS, CATEGORIES } from "./data";
-import { MenuItem, CartItem } from "./types";
-import { Header } from "./components/Header";
+import { MenuItem, CartItem, CheckoutSession, MobileTab } from "./types";
+import { CustomerLayout } from "./components/CustomerLayout";
 import { HeroCarousel } from "./components/HeroCarousel";
 import { ItemCard } from "./components/ItemCard";
 import { AboutUs } from "./components/AboutUs";
-import { Footer } from "./components/Footer";
-import { CartDrawer } from "./components/CartDrawer";
 import { SignInPage } from "./components/SignInPage";
 import { PrivacyPolicy } from "./components/PrivacyPolicy";
 import { AdminDashboard } from "./components/AdminDashboard";
 import { RiderDashboard } from "./components/RiderDashboard";
-import { supabase, fetchAllOrders, insertOrder, fetchMenuCustomizer, fetchRegisteredUsers } from "./lib/supabase";
+import { CartPage } from "./pages/CartPage";
+import { AddressPage } from "./pages/AddressPage";
+import { PaymentPage } from "./pages/PaymentPage";
+import { supabase, fetchAllOrders, fetchMenuCustomizer, fetchRegisteredUsers } from "./lib/supabase";
+import {
+  loadCartFromStorage,
+  saveCartToStorage,
+  saveCheckoutSession,
+  loadCheckoutSession,
+  clearCheckoutSession,
+} from "./lib/cartStorage";
+import { calculateCheckoutSummary, fetchCheckoutConfig } from "./lib/checkout";
+
+function normalizePath(path: string): string {
+  return (path.replace(/\/+$/, "") || "/").toLowerCase();
+}
 
 export default function App() {
   const [selectedCategory, setSelectedCategory] = useState<string>("Breakfast");
   const [searchQuery, setSearchQuery] = useState<string>("");
-  const [cart, setCart] = useState<CartItem[]>([]);
-  const [cartOpen, setCartOpen] = useState(false);
+  const [cart, setCart] = useState<CartItem[]>(() => loadCartFromStorage());
   const [currentPath, setCurrentPath] = useState<string>(window.location.pathname || "/");
   const [navigatingState, setNavigatingState] = useState<boolean>(false);
   const [userEmail, setUserEmail] = useState<string | null>(null);
@@ -27,7 +39,7 @@ export default function App() {
   const [deliveryAddress, setDeliveryAddress] = useState<string>("No address currently set. Please select below.");
   const [orderSuccess, setOrderSuccess] = useState(false);
   const [lastOrderDetails, setLastOrderDetails] = useState<{ id: string; total: number } | null>(null);
-  const [activeMobileTab, setActiveMobileTab] = useState<"home" | "orders" | "profile" | "notifications">("home");
+  const [activeMobileTab, setActiveMobileTab] = useState<MobileTab>("home");
   const [menuOverrides, setMenuOverrides] = useState<Record<string, { price?: number; inStock?: boolean }>>({});
   const [myOrdersList, setMyOrdersList] = useState<any[]>([]);
   const [addressSearch, setAddressSearch] = useState("");
@@ -176,6 +188,7 @@ export default function App() {
 
   const saveCart = (newCart: CartItem[]) => {
     setCart(newCart);
+    saveCartToStorage(newCart);
   };
 
   // State Management Handlers
@@ -251,37 +264,72 @@ export default function App() {
     setActiveMobileTab("home");
   };
 
-  const handleCheckout = async () => {
-    if (!userEmail) {
-      navigateTo("/signin");
-      return;
+  const handleNavigateAccount = (tab: MobileTab) => {
+    setActiveMobileTab(tab);
+    if (normalizePath(currentPath) !== "/") {
+      navigateTo("/");
+    } else {
+      window.scrollTo({ top: 0, behavior: "smooth" });
     }
+  };
 
-    const subtotal = cart.reduce((acc, current) => acc + current.item.price * current.quantity, 0);
-    const gst = Math.round(subtotal * 0.05);
-    const deliveryFee = subtotal > 300 ? 0 : 39;
-    const finalBill = subtotal + gst + deliveryFee;
+  const handleOpenCart = () => {
+    navigateTo("/cart");
+  };
 
-    const fakeOrderId = "KK-" + Math.floor(Math.random() * 900000 + 100000);
-    
-    await insertOrder({
-      id: fakeOrderId,
-      total: finalBill,
-      items: [...cart],
-      userEmail: userEmail
+  const handleSelectAddressFromCart = async () => {
+    const config = await fetchCheckoutConfig();
+    const summary = calculateCheckoutSummary(cart, config);
+    saveCheckoutSession({ cartItems: cart, summary });
+    navigateTo("/address");
+  };
+
+  const handleAddressContinue = async (address: CheckoutSession["address"], distanceKm: number) => {
+    const config = await fetchCheckoutConfig();
+    const summary = calculateCheckoutSummary(cart, config);
+    saveCheckoutSession({
+      cartItems: cart,
+      summary,
+      address,
+      distanceKm,
     });
+    navigateTo("/payment");
+  };
 
-    setLastOrderDetails({
-      id: fakeOrderId,
-      total: finalBill
-    });
-    setCartOpen(false);
+  const handlePaymentSuccess = (orderId: string, total: number) => {
+    setLastOrderDetails({ id: orderId, total });
+    saveCart([]);
+    clearCheckoutSession();
     setOrderSuccess(true);
-    saveCart([]); // clear cart on success
-    loadClientData(); // Refresh list immediately
+    loadClientData();
+    navigateTo("/");
+    setActiveMobileTab("orders");
   };
 
   const totalCartCount = cart.reduce((acc, current) => acc + current.quantity, 0);
+  const userOrderCount = myOrdersList.filter(
+    (order) => order.userEmail?.toLowerCase() === userEmail?.toLowerCase()
+  ).length;
+
+  const layoutProps = {
+    cartCount: totalCartCount,
+    userEmail,
+    navigatingState,
+    activeMobileTab,
+    orderCount: userOrderCount,
+    onOpenCart: handleOpenCart,
+    onOpenLogin: () => navigateTo("/signin"),
+    onLogout: handleLogout,
+    onNavigateHome: () => {
+      setActiveMobileTab("home");
+      navigateTo("/");
+    },
+    onNavigateAccount: handleNavigateAccount,
+    onNavigate: navigateTo,
+    showMobileNav: Boolean(userEmail),
+  };
+
+  const path = normalizePath(currentPath);
 
   if (userRole === "ADMIN") {
     return (
@@ -376,35 +424,67 @@ export default function App() {
     );
   }
 
+  if (path === "/cart") {
+    return (
+      <CustomerLayout {...layoutProps}>
+        <CartPage
+          cartItems={cart}
+          onBack={() => navigateTo("/")}
+          onAddMore={() => navigateTo("/")}
+          onSelectAddress={handleSelectAddressFromCart}
+          onUpdateQuantity={handleUpdateQuantity}
+          onRemoveItem={handleRemoveItem}
+          isLoggedIn={Boolean(userEmail)}
+          onRequireLogin={() => navigateTo("/signin")}
+        />
+      </CustomerLayout>
+    );
+  }
+
+  if (path === "/address") {
+    return (
+      <CustomerLayout {...layoutProps}>
+        <AddressPage
+          onBack={() => navigateTo("/cart")}
+          onContinue={handleAddressContinue}
+          defaultReceiverName={userDisplayName !== "Valued Customer" ? userDisplayName : ""}
+        />
+      </CustomerLayout>
+    );
+  }
+
+  if (path === "/payment") {
+    const session = loadCheckoutSession<CheckoutSession>();
+    if (!userEmail || !session?.address || !session.summary) {
+      return (
+        <CustomerLayout {...layoutProps}>
+          <CartPage
+            cartItems={cart}
+            onBack={() => navigateTo("/")}
+            onAddMore={() => navigateTo("/")}
+            onSelectAddress={handleSelectAddressFromCart}
+            onUpdateQuantity={handleUpdateQuantity}
+            onRemoveItem={handleRemoveItem}
+            isLoggedIn={Boolean(userEmail)}
+            onRequireLogin={() => navigateTo("/signin")}
+          />
+        </CustomerLayout>
+      );
+    }
+    return (
+      <CustomerLayout {...layoutProps}>
+        <PaymentPage
+          session={session}
+          userEmail={userEmail}
+          onBack={() => navigateTo("/address")}
+          onSuccess={handlePaymentSuccess}
+        />
+      </CustomerLayout>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-neutral-50/50 flex flex-col font-sans text-neutral-800 selection:bg-brand-green selection:text-white relative">
-      {/* Page Loading state */}
-      {navigatingState && (
-        <div className="fixed inset-0 bg-brand-green z-[200] flex flex-col items-center justify-center p-6 text-center animate-in fade-in duration-300">
-          <div className="relative flex items-center justify-center">
-            <div className="w-16 h-16 border-4 border-brand-yellow/30 border-t-brand-yellow rounded-full animate-spin" />
-            <ChefHat className="w-6 h-6 text-brand-yellow absolute animate-pulse" />
-          </div>
-          <h2 className="text-xl font-bold tracking-widest text-white mt-6 font-display">
-            KALYANI KITCHEN
-          </h2>
-          <p className="text-xs text-green-200 mt-1 font-sans uppercase tracking-widest">
-            Loading Fresh Flavors...
-          </p>
-        </div>
-      )}
-
-      {/* Header component */}
-      <Header
-        cartCount={totalCartCount}
-        onOpenCart={() => setCartOpen(true)}
-        onOpenLogin={() => navigateTo("/signin")}
-        userEmail={userEmail}
-        onLogout={handleLogout}
-      />
-
-      {/* Main Container */}
-      <main className="flex-1 pb-24 lg:pb-16">
+    <CustomerLayout {...layoutProps}>
         {/* VIEW 1: HOME CATALOG VIEW */}
         {activeMobileTab === "home" && (
           <>
@@ -640,7 +720,7 @@ export default function App() {
                                     ord.items.forEach((ci: any) => {
                                       handleAddToCart(ci.item);
                                     });
-                                    setCartOpen(true);
+                                    handleOpenCart();
                                   }
                                 }}
                                 className="bg-brand-green hover:bg-brand-green/95 text-white font-extrabold text-[10px] px-3.5 py-2 rounded-lg uppercase tracking-wider flex items-center gap-1 active:scale-95 transition-transform cursor-pointer"
@@ -859,21 +939,6 @@ export default function App() {
             </div>
           </div>
         )}
-      </main>
-
-      {/* Footer component */}
-      <Footer onNavigate={navigateTo} />
-
-      {/* Slide-over cart drawer */}
-      <CartDrawer
-        isOpen={cartOpen}
-        onClose={() => setCartOpen(false)}
-        cartItems={cart}
-        onUpdateQuantity={handleUpdateQuantity}
-        onRemoveItem={handleRemoveItem}
-        onCheckout={handleCheckout}
-      />
-
       {/* Order Success Screen Dialog overlay */}
       {orderSuccess && lastOrderDetails && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
@@ -882,7 +947,7 @@ export default function App() {
             <div className="w-16 h-16 bg-brand-green/10 rounded-full flex items-center justify-center mx-auto mb-4">
               <CheckCircle2 className="w-10 h-10 text-brand-green" />
             </div>
-            
+
             <h3 className="text-2xl font-black text-neutral-900 font-display">Order Placed Successfully!</h3>
             <p className="text-neutral-500 text-sm mt-2 leading-relaxed">
               Your gourmet order from <strong className="text-brand-green">Kalyani Kitchen</strong> is received and currently being cooked by our master chefs.
@@ -893,121 +958,21 @@ export default function App() {
                 <span className="text-neutral-500 font-medium">Order ID</span>
                 <span className="font-extrabold text-neutral-800">{lastOrderDetails.id}</span>
               </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-neutral-500 font-medium">Delivery Address</span>
-                <span className="font-extrabold text-neutral-800 truncate max-w-[200px]">{userEmail}</span>
-              </div>
               <div className="flex justify-between text-xs pt-1.5 border-t border-brand-green/15">
-                <span className="text-neutral-700 font-bold">Paid via UPI / Card</span>
+                <span className="text-neutral-700 font-bold">Paid via Razorpay</span>
                 <span className="font-black text-brand-green">₹{lastOrderDetails.total}</span>
               </div>
             </div>
 
-            <div className="text-[11px] text-neutral-400 bg-neutral-50 p-2.5 rounded-lg mb-6">
-              🛵 Your neighborhood delivery executive is already assigned to Kalyani Kitchen base. ETA 25 minutes.
-            </div>
-
             <button
               onClick={() => setOrderSuccess(false)}
-              className="w-full bg-brand-green hover:bg-brand-green/90 text-white font-extrabold text-sm uppercase py-3.5 rounded-lg shadow-md transition-colors"
+              className="w-full bg-brand-green hover:bg-brand-green/90 text-white font-extrabold text-sm uppercase py-3.5 rounded-lg shadow-md transition-colors cursor-pointer"
             >
               Continue Dining Experience
             </button>
           </div>
         </div>
       )}
-
-      {/* Dynamic Lifted Bottom Mobile & Tablet Navigation Bar */}
-      {userEmail && (
-        <div 
-          id="mob-nav-bar"
-          className="fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-lg border-t border-neutral-200/95 shadow-[0_-10px_35px_rgba(0,0,0,0.12)] z-40 lg:hidden px-4 sm:px-10 flex items-center justify-around select-none transition-all duration-300 pb-[calc(1.75rem+env(safe-area-inset-bottom,10px))] pt-4 mb-0"
-        >
-          {/* Home button */}
-          <button
-            onClick={() => {
-              setActiveMobileTab("home");
-              window.scrollTo({ top: 0, behavior: "smooth" });
-            }}
-            className={`flex flex-col items-center justify-center py-1 flex-1 transition-all ${
-              activeMobileTab === "home" ? "text-brand-green scale-105 font-black" : "text-neutral-400 font-medium"
-            }`}
-          >
-            <Home className="w-5.5 h-5.5" />
-            <span className="text-[10px] mt-1.5 uppercase tracking-wider">Home</span>
-          </button>
-
-          {/* Orders button */}
-          <button
-            onClick={() => {
-              setActiveMobileTab("orders");
-            }}
-            className={`flex flex-col items-center justify-center py-1 flex-1 transition-all relative ${
-              activeMobileTab === "orders" ? "text-brand-green scale-105 font-black" : "text-neutral-400 font-medium"
-            }`}
-          >
-            <ClipboardList className="w-5.5 h-5.5" />
-            <span className="text-[10px] mt-1.5 uppercase tracking-wider">My Orders</span>
-            {(() => {
-              const orders = myOrdersList.filter(
-                (o: any) => o.userEmail?.toLowerCase() === userEmail?.toLowerCase()
-              );
-              return orders.length > 0 && activeMobileTab !== "orders" ? (
-                <span className="absolute top-0 right-1/4 bg-brand-yellow text-brand-green font-extrabold text-[9px] h-4 w-4 rounded-full flex items-center justify-center border border-white">
-                  {orders.length}
-                </span>
-              ) : null;
-            })()}
-          </button>
-
-          {/* Notifications button */}
-          <button
-            onClick={() => {
-              setActiveMobileTab("notifications");
-            }}
-            className={`flex flex-col items-center justify-center py-1 flex-1 transition-all relative ${
-              activeMobileTab === "notifications" ? "text-brand-green scale-105 font-black" : "text-neutral-400 font-medium"
-            }`}
-          >
-            <Bell className="w-5.5 h-5.5" />
-            <span className="text-[10px] mt-1.5 uppercase tracking-wider">Alerts</span>
-            {activeMobileTab !== "notifications" && (
-              <span className="absolute top-1.5 right-[32%] bg-red-500 h-2 w-2 rounded-full ring-2 ring-white animate-pulse" />
-            )}
-          </button>
-
-          {/* Profile button */}
-          <button
-            onClick={() => {
-              setActiveMobileTab("profile");
-            }}
-            className={`flex flex-col items-center justify-center py-1 flex-1 transition-all ${
-              activeMobileTab === "profile" ? "text-brand-green scale-105 font-black" : "text-neutral-400 font-medium"
-            }`}
-          >
-            <User className="w-5.5 h-5.5" />
-            <span className="text-[10px] mt-1.5 uppercase tracking-wider">Profile</span>
-          </button>
-        </div>
-      )}
-
-      {/* Floating WhatsApp Order Button */}
-      <a
-        href="https://wa.me/918792496216?text=Hello%20Kalyani%20Kitchen%2C%20I%20would%20like%20to%20place%20an%20order..."
-        target="_blank"
-        rel="noopener noreferrer"
-        className={`fixed right-6 z-50 bg-[#25D366] hover:bg-[#20ba5a] active:scale-95 text-white p-3.5 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 flex items-center justify-center cursor-pointer group ${
-          userEmail ? "bottom-[98px] lg:bottom-6" : "bottom-6"
-        }`}
-        title="Order via WhatsApp"
-      >
-        <span className="absolute right-full mr-3 bg-neutral-900/90 text-white text-[10px] sm:text-xs font-bold py-1.5 px-3 rounded-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity duration-300 shadow-md whitespace-nowrap">
-          Order via WhatsApp 💬
-        </span>
-        <svg className="w-6 h-6 fill-current text-white" viewBox="0 0 24 24">
-          <path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946C.06 5.348 5.397.01 12.008.01c3.202.001 6.212 1.246 8.477 3.514 2.266 2.268 3.507 5.28 3.505 8.484-.004 6.657-5.34 11.997-11.953 11.997-2.005-.001-3.973-.502-5.717-1.458L0 24zm6.59-4.846c1.6.95 3.188 1.449 4.825 1.451 5.436 0 9.86-4.37 9.863-9.748.002-2.607-1.01-5.059-2.85-6.902C16.645 2.113 14.197 1.1 11.604 1.1 6.162 1.1 1.74 5.47 1.737 10.849c-.001 1.701.448 3.364 1.3 4.872l-.991 3.619 3.733-.969c1.493.81 3.07 1.236 4.606 1.236-.002 0-.002 0-.001 0zm11.332-6.52c-.312-.156-1.847-.91-2.128-1.012-.282-.102-.487-.156-.692.156-.204.312-.793 1.013-.974 1.22-.18.204-.36.23-.672.073-1.016-.411-1.921-.837-2.673-1.503-.591-.52-.942-1.127-1.059-1.33-.117-.204-.012-.315.089-.415.092-.091.205-.23.307-.347.102-.117.137-.197.205-.33.067-.13-.034-.249-.084-.351-.05-.102-.487-1.173-.672-1.611-.18-.433-.362-.375-.494-.381-.127-.006-.273-.008-.418-.008-.146 0-.381.054-.581.272-.2.218-.762.744-.762 1.815 0 1.072.78 2.106.89 2.253.11.147 1.534 2.341 3.717 3.284.519.224.924.359 1.242.46.521.166.996.143 1.368.088.416-.061 1.847-.756 2.109-1.451.262-.695.262-1.29.184-1.42s-.282-.204-.593-.362z" />
-        </svg>
-      </a>
-    </div>
+    </CustomerLayout>
   );
 }
