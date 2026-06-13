@@ -36,10 +36,55 @@ interface SignInPageProps {
 type ModeType = "signin" | "forget_password" | "create_account";
 type SignupStep = "details" | "security" | "address" | "otp";
 type ResetStep = "email" | "otp" | "new_password";
+type OtpSendStatus = "idle" | "sending" | "sent" | "failed";
 
 interface MapboxFeature {
   id: string;
   place_name: string;
+}
+
+const SIGNUP_STEPS: Array<{ id: SignupStep; label: string }> = [
+  { id: "details", label: "Details" },
+  { id: "security", label: "Password" },
+  { id: "address", label: "Address" },
+  { id: "otp", label: "Verify" },
+];
+
+function SignupProgress({ currentStep }: { currentStep: SignupStep }) {
+  const currentIndex = SIGNUP_STEPS.findIndex((step) => step.id === currentStep);
+
+  return (
+    <div className="mb-4">
+      <div className="flex items-center justify-between gap-1">
+        {SIGNUP_STEPS.map((step, index) => {
+          const isComplete = index < currentIndex;
+          const isActive = index === currentIndex;
+          return (
+            <div key={step.id} className="flex-1 flex flex-col items-center gap-1">
+              <div
+                className={`w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-black border ${
+                  isComplete
+                    ? "bg-brand-green text-white border-brand-green"
+                    : isActive
+                      ? "bg-brand-yellow text-brand-green border-brand-yellow"
+                      : "bg-neutral-100 text-neutral-400 border-neutral-200"
+                }`}
+              >
+                {isComplete ? "✓" : index + 1}
+              </div>
+              <span
+                className={`text-[8px] font-bold uppercase tracking-wide ${
+                  isActive ? "text-brand-green" : isComplete ? "text-neutral-600" : "text-neutral-400"
+                }`}
+              >
+                {step.label}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange }: SignInPageProps) {
@@ -73,6 +118,8 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
   const [mapSuggestions, setMapSuggestions] = useState<MapboxFeature[]>([]);
   const [resendCooldown, setResendCooldown] = useState(0);
   const [pendingAddress, setPendingAddress] = useState("");
+  const [otpSendStatus, setOtpSendStatus] = useState<OtpSendStatus>("idle");
+  const [shouldSendSignupOtp, setShouldSendSignupOtp] = useState(false);
 
   useEffect(() => {
     setEmail("");
@@ -96,7 +143,50 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
     setMapSuggestions([]);
     setResendCooldown(0);
     setPendingAddress("");
+    setOtpSendStatus("idle");
+    setShouldSendSignupOtp(false);
   }, [initialPath]);
+
+  useEffect(() => {
+    if (!shouldSendSignupOtp || signupStep !== "otp") {
+      return;
+    }
+
+    let cancelled = false;
+
+    const sendSignupOtp = async () => {
+      setOtpSendStatus("sending");
+      setErrorMsg("");
+      setInfoMsg("");
+
+      const result = await initiateSignup({
+        email,
+        name,
+        password,
+        phone: pendingAddress,
+      });
+
+      if (cancelled) return;
+
+      setShouldSendSignupOtp(false);
+
+      if (!result.success) {
+        setOtpSendStatus("failed");
+        setErrorMsg(result.message || "Failed to send verification code.");
+        return;
+      }
+
+      setOtpSendStatus("sent");
+      setInfoMsg(result.message || "Verification code sent. Check your email.");
+      startResendCooldown();
+    };
+
+    void sendSignupOtp();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [shouldSendSignupOtp, signupStep, email, name, password, pendingAddress]);
 
   useEffect(() => {
     if (resendCooldown <= 0) return;
@@ -358,24 +448,8 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
 
       const finalAddress = `${houseNo ? `${houseNo}, ` : ""}${addressLine}${landmark ? ` (Landmark: ${landmark})` : ""}`;
       setPendingAddress(finalAddress);
-
-      setIsLoading(true);
-      const result = await initiateSignup({
-        email,
-        name,
-        password,
-        phone: finalAddress,
-      });
-      setIsLoading(false);
-
-      if (!result.success) {
-        setErrorMsg(result.message || "Failed to send verification code.");
-        return;
-      }
-
-      setInfoMsg(result.message || "Verification code sent.");
-      startResendCooldown();
       setSignupStep("otp");
+      setShouldSendSignupOtp(true);
     }
   };
 
@@ -405,17 +479,22 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
   const handleSignupOtpResend = async () => {
     setErrorMsg("");
     setInfoMsg("");
-    setIsLoading(true);
+    setOtpSendStatus("sending");
     const result = await resendSignupOtp(email);
-    setIsLoading(false);
 
     if (!result.success) {
+      setOtpSendStatus("failed");
       setErrorMsg(result.message || "Unable to resend verification code.");
       return;
     }
 
+    setOtpSendStatus("sent");
     setInfoMsg(result.message || "A new verification code has been sent.");
     startResendCooldown();
+  };
+
+  const handleRetrySignupOtpSend = () => {
+    setShouldSendSignupOtp(true);
   };
 
   return (
@@ -441,8 +520,10 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
               />
             </div>
             <h1 className="text-base sm:text-lg font-black tracking-wide font-display text-white uppercase leading-tight">
-              {mode === "create_account" && "Create Account"}
-              {mode === "forget_password" && "Reset Password"}
+              {mode === "create_account" && signupStep === "otp" && "Verify Email"}
+              {mode === "create_account" && signupStep !== "otp" && "Create Account"}
+              {mode === "forget_password" && resetStep === "otp" && "Verify Email"}
+              {mode === "forget_password" && resetStep !== "otp" && "Reset Password"}
               {mode === "signin" && "Kalyani Kitchen"}
             </h1>
           </div>
@@ -666,6 +747,7 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
 
             {mode === "create_account" && signupStep !== "otp" && (
               <form onSubmit={handleCreateAccountSubmit} className="space-y-3">
+                <SignupProgress currentStep={signupStep} />
                 {signupStep === "details" && (
                   <>
                     <div className="space-y-0.5">
@@ -864,11 +946,33 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
 
             {mode === "create_account" && signupStep === "otp" && (
               <div className="space-y-3">
+                <SignupProgress currentStep="otp" />
+
+                <div className="bg-brand-green/5 border border-brand-green/15 rounded-lg p-3 text-center">
+                  <p className="text-[10px] font-extrabold text-brand-green uppercase tracking-wider">
+                    Email Verification Required
+                  </p>
+                  <p className="text-[10px] text-neutral-500 mt-1 leading-relaxed">
+                    Enter the 6-digit code we sent to complete your Kalyani Kitchen account.
+                  </p>
+                </div>
+
+                {otpSendStatus === "failed" && (
+                  <button
+                    type="button"
+                    onClick={handleRetrySignupOtpSend}
+                    className="w-full bg-amber-50 hover:bg-amber-100 text-amber-800 font-extrabold text-[10px] uppercase py-2 rounded-lg border border-amber-200 cursor-pointer"
+                  >
+                    Retry Sending Code
+                  </button>
+                )}
+
                 <OtpVerificationForm
                   email={email}
                   onVerify={handleSignupOtpVerify}
                   onResend={handleSignupOtpResend}
                   isLoading={isLoading}
+                  isSending={otpSendStatus === "sending"}
                   resendCooldownSeconds={resendCooldown}
                   submitLabel="Verify & Create Account"
                   description="Enter the 6-digit code sent to your email to complete registration."
@@ -876,7 +980,11 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
                 <div className="pt-2 border-t border-neutral-100 text-center">
                   <button
                     type="button"
-                    onClick={() => setSignupStep("address")}
+                    onClick={() => {
+                      setSignupStep("address");
+                      setOtpSendStatus("idle");
+                      setShouldSendSignupOtp(false);
+                    }}
                     className="text-[10px] font-extrabold text-brand-green uppercase tracking-wide hover:underline cursor-pointer inline-flex items-center gap-1"
                   >
                     <ArrowLeft className="w-3 h-3" /> Back

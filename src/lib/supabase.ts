@@ -82,6 +82,17 @@ function supabaseNotConfigured(): AuthActionResult {
   return { success: false, message: "Supabase authentication is not configured." };
 }
 
+function isOtpGuardRpcUnavailable(error: { code?: string; message?: string }): boolean {
+  const code = error.code ?? "";
+  const message = (error.message ?? "").toLowerCase();
+  return (
+    code === "PGRST202" ||
+    code === "42883" ||
+    (message.includes("function") && message.includes("does not exist")) ||
+    message.includes("could not find the function")
+  );
+}
+
 export async function checkOtpSendAllowed(
   email: string,
   purpose: OtpPurpose
@@ -96,6 +107,10 @@ export async function checkOtpSendAllowed(
   });
 
   if (error) {
+    if (isOtpGuardRpcUnavailable(error)) {
+      console.warn("OTP send guard RPC unavailable; continuing with Supabase Auth rate limits only.");
+      return { allowed: true };
+    }
     console.error("checkOtpSendAllowed error:", error);
     return { allowed: false, message: "Unable to verify OTP send eligibility." };
   }
@@ -117,6 +132,10 @@ export async function checkOtpVerifyAllowed(
   });
 
   if (error) {
+    if (isOtpGuardRpcUnavailable(error)) {
+      console.warn("OTP verify guard RPC unavailable; continuing with Supabase Auth verification only.");
+      return { allowed: true, attemptsRemaining: OTP_MAX_VERIFY_ATTEMPTS };
+    }
     console.error("checkOtpVerifyAllowed error:", error);
     return { allowed: false, message: "Unable to verify OTP eligibility." };
   }
@@ -366,7 +385,7 @@ export async function initiateSignup(payload: SignupPayload): Promise<AuthAction
     };
   }
 
-  const { error: signUpError } = await supabase.auth.signUp({
+  const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
     email: normalizedEmail,
     password: payload.password,
     options: {
@@ -376,6 +395,10 @@ export async function initiateSignup(payload: SignupPayload): Promise<AuthAction
       },
     },
   });
+
+  if (signUpData?.session) {
+    await supabase.auth.signOut();
+  }
 
   if (signUpError) {
     const msg = signUpError.message.toLowerCase();

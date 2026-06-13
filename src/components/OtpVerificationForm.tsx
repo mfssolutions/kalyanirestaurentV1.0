@@ -7,6 +7,7 @@ interface OtpVerificationFormProps {
   onVerify: (otp: string) => void | Promise<void>;
   onResend: () => void | Promise<void>;
   isLoading: boolean;
+  isSending?: boolean;
   resendCooldownSeconds?: number;
   submitLabel?: string;
   description?: string;
@@ -17,6 +18,7 @@ export function OtpVerificationForm({
   onVerify,
   onResend,
   isLoading,
+  isSending = false,
   resendCooldownSeconds = 0,
   submitLabel = "Verify Code",
   description = "Enter the 6-digit code sent to your email.",
@@ -70,11 +72,18 @@ export function OtpVerificationForm({
     }
   };
 
+  const formDisabled = isLoading || isSending;
+
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <div className="text-center space-y-1">
         <p className="text-[10px] text-neutral-500 leading-relaxed">{description}</p>
         <p className="text-[10px] font-bold text-brand-green truncate">{email}</p>
+        {isSending && (
+          <p className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5 mt-2">
+            Sending verification code to your email...
+          </p>
+        )}
       </div>
 
       <div className="flex items-center justify-center gap-1.5 sm:gap-2">
@@ -92,7 +101,8 @@ export function OtpVerificationForm({
             onChange={(event) => handleDigitChange(index, event.target.value)}
             onKeyDown={(event) => handleKeyDown(index, event.key)}
             onPaste={handlePaste}
-            className="w-9 h-11 sm:w-10 sm:h-12 text-center text-sm font-black border border-neutral-300 rounded-lg focus:ring-2 focus:ring-brand-green focus:border-brand-green focus:outline-none bg-neutral-50 text-neutral-900"
+            disabled={formDisabled}
+            className="w-9 h-11 sm:w-10 sm:h-12 text-center text-sm font-black border border-neutral-300 rounded-lg focus:ring-2 focus:ring-brand-green focus:border-brand-green focus:outline-none bg-neutral-50 text-neutral-900 disabled:opacity-60"
             aria-label={`Digit ${index + 1} of ${OTP_CODE_LENGTH}`}
           />
         ))}
@@ -100,7 +110,7 @@ export function OtpVerificationForm({
 
       <button
         type="submit"
-        disabled={isLoading || otpValue.length !== OTP_CODE_LENGTH}
+        disabled={formDisabled || otpValue.length !== OTP_CODE_LENGTH}
         className="w-full bg-brand-green hover:bg-brand-green/95 disabled:opacity-60 disabled:cursor-not-allowed text-white font-extrabold text-xs uppercase py-2.5 rounded-lg shadow-sm font-display cursor-pointer"
       >
         {submitLabel}
@@ -115,7 +125,7 @@ export function OtpVerificationForm({
           <button
             type="button"
             onClick={() => onResend()}
-            disabled={isLoading}
+            disabled={formDisabled}
             className="inline-flex items-center gap-1 text-[10px] font-extrabold text-brand-green uppercase tracking-wide hover:underline cursor-pointer disabled:opacity-60"
           >
             <RefreshCw className="w-3 h-3" />
