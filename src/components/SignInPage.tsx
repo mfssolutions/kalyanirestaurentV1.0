@@ -1,7 +1,30 @@
 import React, { FormEvent, useEffect, useState } from "react";
-import { ArrowLeft, CheckCircle, Eye, EyeOff, Lock, Mail, MapPin, Navigation, Search as SearchIcon, UserPlus } from "lucide-react";
+import {
+  ArrowLeft,
+  CheckCircle,
+  Eye,
+  EyeOff,
+  Lock,
+  Mail,
+  MapPin,
+  Navigation,
+  Search as SearchIcon,
+  UserPlus,
+} from "lucide-react";
 import kitchenLogo from "../Public/Logo/logo.png";
-import { authenticateUser, checkEmailRegistered, registerNewUser, sendPasswordResetEmail } from "../lib/supabase";
+import { OtpVerificationForm } from "./OtpVerificationForm";
+import {
+  authenticateUser,
+  checkEmailRegistered,
+  completePasswordReset,
+  initiateSignup,
+  OTP_RESEND_COOLDOWN_SECONDS,
+  resendPasswordResetOtp,
+  resendSignupOtp,
+  sendPasswordResetOtp,
+  verifyPasswordResetOtp,
+  verifySignupOtp,
+} from "../lib/supabase";
 
 interface SignInPageProps {
   onLogin: (email: string) => void;
@@ -11,14 +34,13 @@ interface SignInPageProps {
 }
 
 type ModeType = "signin" | "forget_password" | "create_account";
-type SignupStep = "details" | "security" | "address";
+type SignupStep = "details" | "security" | "address" | "otp";
+type ResetStep = "email" | "otp" | "new_password";
 
 interface MapboxFeature {
   id: string;
   place_name: string;
 }
-
-const RESET_REDIRECT_PATH = "/signin";
 
 export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange }: SignInPageProps) {
   const getModeFromPath = (path: string): ModeType => {
@@ -33,38 +55,62 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [infoMsg, setInfoMsg] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
+  const [successMessage, setSuccessMessage] = useState("");
   const [signupStep, setSignupStep] = useState<SignupStep>("details");
+  const [resetStep, setResetStep] = useState<ResetStep>("email");
   const [locatingUser, setLocatingUser] = useState(false);
   const [addressLine, setAddressLine] = useState("");
   const [houseNo, setHouseNo] = useState("");
   const [landmark, setLandmark] = useState("");
   const [mapSearch, setMapSearch] = useState("");
   const [mapSuggestions, setMapSuggestions] = useState<MapboxFeature[]>([]);
+  const [resendCooldown, setResendCooldown] = useState(0);
+  const [pendingAddress, setPendingAddress] = useState("");
 
   useEffect(() => {
     setEmail("");
     setName("");
     setPassword("");
+    setNewPassword("");
     setShowPassword(false);
+    setShowNewPassword(false);
     setErrorMsg("");
     setInfoMsg("");
     setIsLoading(false);
     setIsSuccess(false);
+    setSuccessMessage("");
     setSignupStep("details");
+    setResetStep("email");
     setLocatingUser(false);
     setAddressLine("");
     setHouseNo("");
     setLandmark("");
     setMapSearch("");
     setMapSuggestions([]);
+    setResendCooldown(0);
+    setPendingAddress("");
   }, [initialPath]);
 
-  const isValidEmail = (value: string) => value.includes("@") && value.includes(".");
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = window.setInterval(() => {
+      setResendCooldown((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [resendCooldown]);
+
+  const startResendCooldown = (seconds = OTP_RESEND_COOLDOWN_SECONDS) => {
+    setResendCooldown(seconds);
+  };
+
+  const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 
   const handleMapSearch = async (query: string) => {
     setMapSearch(query);
@@ -81,7 +127,9 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
     }
 
     try {
-      const response = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${mapboxToken}&country=IN&limit=5`);
+      const response = await fetch(
+        `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${mapboxToken}&country=IN&limit=5`
+      );
       const data = await response.json();
       setMapSuggestions(Array.isArray(data?.features) ? data.features : []);
     } catch (error) {
@@ -110,10 +158,13 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
             return;
           }
 
-          const response = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${longitude},${latitude}.json?access_token=${mapboxToken}`);
+          const response = await fetch(
+            `https://api.mapbox.com/geocoding/v5/mapbox.places/${longitude},${latitude}.json?access_token=${mapboxToken}`
+          );
           const data = await response.json();
           const firstMatch = data?.features?.[0]?.place_name;
-          const detectedAddress = firstMatch || `Coordinates: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
+          const detectedAddress =
+            firstMatch || `Coordinates: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
           setAddressLine(detectedAddress);
           setMapSearch(detectedAddress);
         } catch (error) {
@@ -132,8 +183,8 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
     );
   };
 
-  const handleSignInSubmit = async (e: FormEvent) => {
-    e.preventDefault();
+  const handleSignInSubmit = async (event: FormEvent) => {
+    event.preventDefault();
     setErrorMsg("");
     setInfoMsg("");
 
@@ -156,6 +207,11 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
         setErrorMsg("This account is not registered. Please create an account below.");
       } else if (result.errorType === "wrong_password") {
         setErrorMsg("Wrong password. Please try again or use Forgot Password.");
+      } else if (result.errorType === "email_not_verified") {
+        setErrorMsg(
+          result.message ||
+            "Please verify your email with the 6-digit code sent during signup."
+        );
       } else {
         setErrorMsg(result.message || "Unable to sign you in right now.");
       }
@@ -163,14 +219,15 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
     }
 
     setIsSuccess(true);
+    setSuccessMessage("Signed in successfully.");
     setTimeout(() => {
       onLogin(email);
       onNavigateHome();
     }, 900);
   };
 
-  const handleForgotPasswordSubmit = async (e: FormEvent) => {
-    e.preventDefault();
+  const handleForgotPasswordEmailSubmit = async (event: FormEvent) => {
+    event.preventDefault();
     setErrorMsg("");
     setInfoMsg("");
 
@@ -180,30 +237,79 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
     }
 
     setIsLoading(true);
-    const registered = await checkEmailRegistered(email);
-    if (!registered) {
-      setIsLoading(false);
-      setErrorMsg("This email address is not registered. Please check the spelling or sign up below.");
-      return;
-    }
-
-    const result = await sendPasswordResetEmail(email, `${window.location.origin}${RESET_REDIRECT_PATH}`);
+    const result = await sendPasswordResetOtp(email);
     setIsLoading(false);
 
     if (!result.success) {
-      setErrorMsg(result.message || "Unable to send reset instructions.");
+      setErrorMsg(result.message || "Unable to send verification code.");
+      return;
+    }
+
+    setInfoMsg(result.message || "Verification code sent.");
+    startResendCooldown();
+    setResetStep("otp");
+  };
+
+  const handleForgotPasswordOtpVerify = async (otp: string) => {
+    setErrorMsg("");
+    setInfoMsg("");
+    setIsLoading(true);
+    const result = await verifyPasswordResetOtp(email, otp);
+    setIsLoading(false);
+
+    if (!result.success) {
+      setErrorMsg(result.message || "Invalid verification code.");
+      return;
+    }
+
+    setInfoMsg(result.message || "Verification successful.");
+    setResetStep("new_password");
+  };
+
+  const handleForgotPasswordResend = async () => {
+    setErrorMsg("");
+    setInfoMsg("");
+    setIsLoading(true);
+    const result = await resendPasswordResetOtp(email);
+    setIsLoading(false);
+
+    if (!result.success) {
+      setErrorMsg(result.message || "Unable to resend verification code.");
+      return;
+    }
+
+    setInfoMsg(result.message || "A new verification code has been sent.");
+    startResendCooldown();
+  };
+
+  const handleForgotPasswordNewPasswordSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    setErrorMsg("");
+    setInfoMsg("");
+
+    if (newPassword.length < 6) {
+      setErrorMsg("Password must be at least 6 characters.");
+      return;
+    }
+
+    setIsLoading(true);
+    const result = await completePasswordReset(newPassword);
+    setIsLoading(false);
+
+    if (!result.success) {
+      setErrorMsg(result.message || "Unable to update password.");
       return;
     }
 
     setIsSuccess(true);
-    setInfoMsg(result.message || "Password reset instructions have been sent.");
+    setSuccessMessage(result.message || "Password updated successfully.");
     setTimeout(() => {
       onPathChange("/signin");
     }, 1200);
   };
 
-  const handleCreateAccountSubmit = async (e: FormEvent) => {
-    e.preventDefault();
+  const handleCreateAccountSubmit = async (event: FormEvent) => {
+    event.preventDefault();
     setErrorMsg("");
     setInfoMsg("");
 
@@ -244,41 +350,72 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
       return;
     }
 
-    if (!addressLine.trim()) {
-      setErrorMsg("Please select or detect your address first.");
-      return;
+    if (signupStep === "address") {
+      if (!addressLine.trim()) {
+        setErrorMsg("Please select or detect your address first.");
+        return;
+      }
+
+      const finalAddress = `${houseNo ? `${houseNo}, ` : ""}${addressLine}${landmark ? ` (Landmark: ${landmark})` : ""}`;
+      setPendingAddress(finalAddress);
+
+      setIsLoading(true);
+      const result = await initiateSignup({
+        email,
+        name,
+        password,
+        phone: finalAddress,
+      });
+      setIsLoading(false);
+
+      if (!result.success) {
+        setErrorMsg(result.message || "Failed to send verification code.");
+        return;
+      }
+
+      setInfoMsg(result.message || "Verification code sent.");
+      startResendCooldown();
+      setSignupStep("otp");
     }
+  };
 
-    const finalAddress = `${houseNo ? `${houseNo}, ` : ""}${addressLine}${landmark ? ` (Landmark: ${landmark})` : ""}`;
-
+  const handleSignupOtpVerify = async (otp: string) => {
+    setErrorMsg("");
+    setInfoMsg("");
     setIsLoading(true);
-    const result = await registerNewUser({
-      email,
+    const result = await verifySignupOtp(email, otp, {
       name,
-      password,
-      phone: finalAddress
+      phone: pendingAddress,
     });
     setIsLoading(false);
 
     if (!result.success) {
-      setErrorMsg(result.message || "Failed to create the account.");
+      setErrorMsg(result.message || "Invalid verification code.");
       return;
     }
 
     setIsSuccess(true);
-
-    if (result.requiresEmailConfirmation) {
-      setInfoMsg("Your account was created. Please confirm your email before signing in.");
-      setTimeout(() => {
-        onPathChange("/signin");
-      }, 1200);
-      return;
-    }
-
+    setSuccessMessage("Account created and verified successfully.");
     setTimeout(() => {
       onLogin(email);
       onNavigateHome();
     }, 1200);
+  };
+
+  const handleSignupOtpResend = async () => {
+    setErrorMsg("");
+    setInfoMsg("");
+    setIsLoading(true);
+    const result = await resendSignupOtp(email);
+    setIsLoading(false);
+
+    if (!result.success) {
+      setErrorMsg(result.message || "Unable to resend verification code.");
+      return;
+    }
+
+    setInfoMsg(result.message || "A new verification code has been sent.");
+    startResendCooldown();
   };
 
   return (
@@ -297,7 +434,11 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
         <div className="max-w-sm w-full bg-white rounded-xl shadow-lg overflow-hidden border border-neutral-100 animate-in fade-in zoom-in-95 duration-250 relative">
           <div className="bg-brand-green text-white p-4 text-center relative overflow-hidden flex flex-col items-center">
             <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center overflow-hidden p-1 shadow-md border border-white/20 mb-2">
-              <img src={kitchenLogo} alt="Kalyani Kitchen Logo" className="w-full h-full object-cover rounded-full bg-white" />
+              <img
+                src={kitchenLogo}
+                alt="Kalyani Kitchen Logo"
+                className="w-full h-full object-cover rounded-full bg-white"
+              />
             </div>
             <h1 className="text-base sm:text-lg font-black tracking-wide font-display text-white uppercase leading-tight">
               {mode === "create_account" && "Create Account"}
@@ -311,9 +452,9 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
               <div className="absolute inset-0 bg-white/95 z-30 flex flex-col items-center justify-center p-4 text-center animate-in fade-in duration-150">
                 <div className="w-10 h-10 border-4 border-brand-green border-t-transparent rounded-full animate-spin" />
                 <h3 className="font-extrabold text-neutral-900 mt-3 text-xs font-display uppercase tracking-wider">
-                  Verifying Identity...
+                  Processing...
                 </h3>
-                <p className="text-[10px] text-neutral-500 mt-0.5">Secured connection to database registries.</p>
+                <p className="text-[10px] text-neutral-500 mt-0.5">Secured connection to authentication service.</p>
               </div>
             )}
 
@@ -325,9 +466,7 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
                 <h3 className="font-extrabold text-neutral-900 mt-3 text-xs font-display uppercase tracking-wider">
                   Success!
                 </h3>
-                <p className="text-[10px] text-neutral-500 mt-0.5">
-                  {mode === "forget_password" ? "Please check your email for the secure reset link." : "Your account request was processed successfully."}
-                </p>
+                <p className="text-[10px] text-neutral-500 mt-0.5">{successMessage}</p>
               </div>
             )}
 
@@ -345,7 +484,9 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
             {mode === "signin" && (
               <form onSubmit={handleSignInSubmit} className="space-y-3">
                 <div className="space-y-0.5">
-                  <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">Email Address</label>
+                  <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">
+                    Email Address
+                  </label>
                   <div className="relative">
                     <Mail className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400 w-3.5 h-3.5" />
                     <input
@@ -353,14 +494,16 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
                       required
                       placeholder="you@example.com"
                       value={email}
-                      onChange={(e) => setEmail(e.target.value)}
+                      onChange={(event) => setEmail(event.target.value)}
                       className="w-full pl-8 pr-3 py-1.5 text-xs border border-neutral-300 rounded-md focus:ring-1 focus:ring-brand-green focus:outline-none bg-neutral-50 text-neutral-900 font-medium"
                     />
                   </div>
                 </div>
 
                 <div className="space-y-0.5">
-                  <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">Password</label>
+                  <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">
+                    Password
+                  </label>
                   <div className="relative">
                     <Lock className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400 w-3.5 h-3.5" />
                     <input
@@ -368,7 +511,7 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
                       required
                       placeholder="••••••••"
                       value={password}
-                      onChange={(e) => setPassword(e.target.value)}
+                      onChange={(event) => setPassword(event.target.value)}
                       className="w-full pl-8 pr-8 py-1.5 text-xs border border-neutral-300 rounded-md focus:ring-1 focus:ring-brand-green focus:outline-none bg-neutral-50 text-neutral-900 font-medium"
                     />
                     <button
@@ -383,10 +526,18 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
 
                 <div className="flex items-center justify-between text-[10px] pt-0.5">
                   <label className="flex items-center gap-1 text-neutral-600 font-bold select-none cursor-pointer">
-                    <input type="checkbox" className="rounded text-brand-green focus:ring-0 accent-brand-green w-3 h-3" defaultChecked />
+                    <input
+                      type="checkbox"
+                      className="rounded text-brand-green focus:ring-0 accent-brand-green w-3 h-3"
+                      defaultChecked
+                    />
                     Remember
                   </label>
-                  <button type="button" onClick={() => onPathChange("/FORGETPASSWORD")} className="text-brand-green font-extrabold hover:underline">
+                  <button
+                    type="button"
+                    onClick={() => onPathChange("/FORGETPASSWORD")}
+                    className="text-brand-green font-extrabold hover:underline"
+                  >
                     Forgot Password?
                   </button>
                 </div>
@@ -412,13 +563,15 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
               </form>
             )}
 
-            {mode === "forget_password" && (
-              <form onSubmit={handleForgotPasswordSubmit} className="space-y-3">
+            {mode === "forget_password" && resetStep === "email" && (
+              <form onSubmit={handleForgotPasswordEmailSubmit} className="space-y-3">
                 <p className="text-[10px] text-neutral-500 leading-normal text-center mb-1">
-                  Enter your registered email below and we will send a secure Supabase password reset link.
+                  Enter your registered email. We will send a 6-digit verification code to reset your password.
                 </p>
                 <div className="space-y-0.5">
-                  <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">Email Address</label>
+                  <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">
+                    Email Address
+                  </label>
                   <div className="relative">
                     <Mail className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400 w-3.5 h-3.5" />
                     <input
@@ -426,7 +579,7 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
                       required
                       placeholder="Your registered email address"
                       value={email}
-                      onChange={(e) => setEmail(e.target.value)}
+                      onChange={(event) => setEmail(event.target.value)}
                       className="w-full pl-8 pr-3 py-1.5 text-xs border border-neutral-300 rounded-md focus:ring-1 focus:ring-brand-green focus:outline-none bg-neutral-50 text-neutral-900 font-medium"
                     />
                   </div>
@@ -435,7 +588,7 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
                   type="submit"
                   className="w-full bg-brand-green hover:bg-brand-green/95 text-white font-extrabold text-xs uppercase py-2.5 rounded-lg shadow-sm font-display cursor-pointer mt-2"
                 >
-                  Send Reset Link
+                  Send Verification Code
                 </button>
 
                 <div className="pt-3 border-t border-neutral-100 text-center">
@@ -450,30 +603,95 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
               </form>
             )}
 
-            {mode === "create_account" && (
+            {mode === "forget_password" && resetStep === "otp" && (
+              <div className="space-y-3">
+                <OtpVerificationForm
+                  email={email}
+                  onVerify={handleForgotPasswordOtpVerify}
+                  onResend={handleForgotPasswordResend}
+                  isLoading={isLoading}
+                  resendCooldownSeconds={resendCooldown}
+                  submitLabel="Verify Code"
+                  description="Enter the 6-digit code sent to your email to continue."
+                />
+                <div className="pt-2 border-t border-neutral-100 text-center">
+                  <button
+                    type="button"
+                    onClick={() => setResetStep("email")}
+                    className="text-[10px] font-extrabold text-brand-green uppercase tracking-wide hover:underline cursor-pointer inline-flex items-center gap-1"
+                  >
+                    <ArrowLeft className="w-3 h-3" /> Change Email
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {mode === "forget_password" && resetStep === "new_password" && (
+              <form onSubmit={handleForgotPasswordNewPasswordSubmit} className="space-y-3">
+                <p className="text-[10px] text-neutral-500 leading-normal text-center mb-1">
+                  Email verified. Choose a new secure password for your account.
+                </p>
+                <div className="space-y-0.5">
+                  <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">
+                    New Password
+                  </label>
+                  <div className="relative">
+                    <Lock className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400 w-3.5 h-3.5" />
+                    <input
+                      type={showNewPassword ? "text" : "password"}
+                      required
+                      minLength={6}
+                      placeholder="At least 6 characters"
+                      value={newPassword}
+                      onChange={(event) => setNewPassword(event.target.value)}
+                      className="w-full pl-8 pr-8 py-1.5 text-xs border border-neutral-300 rounded-md focus:ring-1 focus:ring-brand-green focus:outline-none bg-neutral-50 text-neutral-900 font-medium"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNewPassword((prev) => !prev)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600 cursor-pointer"
+                    >
+                      {showNewPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+                <button
+                  type="submit"
+                  className="w-full bg-brand-green hover:bg-brand-green/95 text-white font-extrabold text-xs uppercase py-2.5 rounded-lg shadow-sm font-display cursor-pointer mt-2"
+                >
+                  Update Password
+                </button>
+              </form>
+            )}
+
+            {mode === "create_account" && signupStep !== "otp" && (
               <form onSubmit={handleCreateAccountSubmit} className="space-y-3">
                 {signupStep === "details" && (
                   <>
                     <div className="space-y-0.5">
-                      <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">Full Name</label>
+                      <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">
+                        Full Name
+                      </label>
                       <input
                         type="text"
                         required
                         placeholder="Your first and last name"
                         value={name}
-                        onChange={(e) => setName(e.target.value)}
+                        onChange={(event) => setName(event.target.value)}
                         className="w-full px-3 py-1.5 text-xs border border-neutral-300 rounded-md focus:ring-1 focus:ring-brand-green focus:outline-none bg-neutral-50 text-neutral-900 font-medium"
                       />
                     </div>
 
                     <div className="space-y-0.5">
-                      <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">Email Address</label>
+                      <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">
+                        Email Address
+                      </label>
                       <input
                         type="email"
                         required
                         placeholder="you@example.com"
                         value={email}
-                        onChange={(e) => setEmail(e.target.value)}
+                        onChange={(event) => setEmail(event.target.value)}
                         className="w-full px-3 py-1.5 text-xs border border-neutral-300 rounded-md focus:ring-1 focus:ring-brand-green focus:outline-none bg-neutral-50 text-neutral-900 font-medium"
                       />
                     </div>
@@ -493,7 +711,9 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
                       Choose a password to secure your personal kitchen profile.
                     </p>
                     <div className="space-y-0.5">
-                      <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">Password</label>
+                      <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">
+                        Password
+                      </label>
                       <div className="relative">
                         <Lock className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400 w-3.5 h-3.5" />
                         <input
@@ -501,7 +721,7 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
                           required
                           placeholder="At least 6 characters"
                           value={password}
-                          onChange={(e) => setPassword(e.target.value)}
+                          onChange={(event) => setPassword(event.target.value)}
                           className="w-full pl-8 pr-8 py-1.5 text-xs border border-neutral-300 rounded-md focus:ring-1 focus:ring-brand-green focus:outline-none bg-neutral-50 text-neutral-900 font-medium"
                         />
                         <button
@@ -545,14 +765,16 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
                     </button>
 
                     <div className="space-y-0.5 relative">
-                      <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">Search Delivery Location</label>
+                      <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">
+                        Search Delivery Location
+                      </label>
                       <div className="relative">
                         <SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400 w-3.5 h-3.5" />
                         <input
                           type="text"
                           placeholder="Search landmark, colony, city..."
                           value={mapSearch}
-                          onChange={(e) => handleMapSearch(e.target.value)}
+                          onChange={(event) => handleMapSearch(event.target.value)}
                           className="w-full pl-8 pr-3 py-1.5 text-xs border border-neutral-300 rounded-md focus:ring-1 focus:ring-brand-green focus:outline-none bg-neutral-50 text-neutral-900"
                         />
                       </div>
@@ -579,30 +801,36 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
 
                     <div className="space-y-1.5 pt-0.5">
                       <div className="space-y-0.5">
-                        <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">House / Flat / Block No.</label>
+                        <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">
+                          House / Flat / Block No.
+                        </label>
                         <input
                           type="text"
                           required
                           placeholder="e.g. Building 4B, Flat 201"
                           value={houseNo}
-                          onChange={(e) => setHouseNo(e.target.value)}
+                          onChange={(event) => setHouseNo(event.target.value)}
                           className="w-full px-2.5 py-1 text-xs border border-neutral-300 rounded-md focus:ring-1 focus:ring-brand-green focus:outline-none text-neutral-900 font-medium"
                         />
                       </div>
 
                       <div className="space-y-0.5">
-                        <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">Landmark / Floor Area</label>
+                        <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">
+                          Landmark / Floor Area
+                        </label>
                         <input
                           type="text"
                           placeholder="e.g. Near Post Office"
                           value={landmark}
-                          onChange={(e) => setLandmark(e.target.value)}
+                          onChange={(event) => setLandmark(event.target.value)}
                           className="w-full px-2.5 py-1 text-xs border border-neutral-300 rounded-md focus:ring-1 focus:ring-brand-green focus:outline-none text-neutral-900 font-medium"
                         />
                       </div>
 
                       <div className="space-y-0.5">
-                        <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">Full Delivery Address</label>
+                        <label className="text-[10px] font-extrabold text-neutral-600 block uppercase tracking-wider">
+                          Full Delivery Address
+                        </label>
                         <textarea
                           rows={2}
                           readOnly
@@ -617,7 +845,7 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
                       type="submit"
                       className="w-full bg-brand-green hover:bg-brand-green/95 text-white font-extrabold text-xs uppercase py-2.5 rounded-lg shadow-sm font-display cursor-pointer mt-2"
                     >
-                      Create Account
+                      Send Verification Code
                     </button>
                   </div>
                 )}
@@ -632,6 +860,29 @@ export function SignInPage({ onLogin, onNavigateHome, initialPath, onPathChange 
                   </button>
                 </div>
               </form>
+            )}
+
+            {mode === "create_account" && signupStep === "otp" && (
+              <div className="space-y-3">
+                <OtpVerificationForm
+                  email={email}
+                  onVerify={handleSignupOtpVerify}
+                  onResend={handleSignupOtpResend}
+                  isLoading={isLoading}
+                  resendCooldownSeconds={resendCooldown}
+                  submitLabel="Verify & Create Account"
+                  description="Enter the 6-digit code sent to your email to complete registration."
+                />
+                <div className="pt-2 border-t border-neutral-100 text-center">
+                  <button
+                    type="button"
+                    onClick={() => setSignupStep("address")}
+                    className="text-[10px] font-extrabold text-brand-green uppercase tracking-wide hover:underline cursor-pointer inline-flex items-center gap-1"
+                  >
+                    <ArrowLeft className="w-3 h-3" /> Back
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         </div>
