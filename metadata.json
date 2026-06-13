@@ -1,0 +1,6 @@
+{
+  "name": "Kalyani Kitchen",
+  "description": "Authentic Indian cuisine and restaurant delivery from Kalyani Kitchen.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
