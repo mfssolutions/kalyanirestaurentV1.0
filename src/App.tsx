@@ -28,9 +28,58 @@ export default function App() {
   const [orderSuccess, setOrderSuccess] = useState(false);
   const [lastOrderDetails, setLastOrderDetails] = useState<{ id: string; total: number } | null>(null);
   const [activeMobileTab, setActiveMobileTab] = useState<"home" | "orders" | "profile" | "notifications">("home");
-
   const [menuOverrides, setMenuOverrides] = useState<Record<string, { price?: number; inStock?: boolean }>>({});
   const [myOrdersList, setMyOrdersList] = useState<any[]>([]);
+  const [addressSearch, setAddressSearch] = useState("");
+  const [addressSuggestions, setAddressSuggestions] = useState<any[]>([]);
+  const [addressHouseNo, setAddressHouseNo] = useState("");
+  const [addressSelection, setAddressSelection] = useState("");
+  const [addressSaved, setAddressSaved] = useState(false);
+
+  const triggerAddressAutocomplete = async (value: string) => {
+    setAddressSearch(value);
+    if (!value.trim()) {
+      setAddressSuggestions([]);
+      return;
+    }
+
+    const token = import.meta.env.VITE_MAPBOX_TOKEN;
+    if (!token) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(value)}.json?access_token=${token}&country=IN&limit=5`);
+      const data = await response.json();
+      setAddressSuggestions(Array.isArray(data?.features) ? data.features : []);
+    } catch (error) {
+      console.error("Address autocomplete failed:", error);
+      setAddressSuggestions([]);
+    }
+  };
+
+  const handleSaveUpdatedAddress = async () => {
+    if (!addressSelection) {
+      return;
+    }
+
+    const finalString = `${addressHouseNo ? `${addressHouseNo}, ` : ""}${addressSelection}`;
+
+    if (supabase && userEmail) {
+      await supabase
+        .from("users")
+        .update({ phone: finalString })
+        .eq("email", userEmail.toLowerCase());
+    }
+
+    setDeliveryAddress(finalString);
+    setAddressSaved(true);
+    setTimeout(() => {
+      setAddressSaved(false);
+      setAddressSearch("");
+      setAddressSuggestions([]);
+    }, 1200);
+  };
 
   // Synchronize client interface with Supabase real-time elements
   const loadClientData = async () => {
@@ -668,107 +717,54 @@ export default function App() {
                     </p>
                   </div>
 
-                  {(() => {
-                    // Inline state holder for profile address correction
-                    const [searchInGroup, setSearchInGroup] = useState("");
-                    const [suggestions, setSuggestions] = useState<any[]>([]);
-                    const [newHouseNo, setNewHouseNo] = useState("");
-                    const [newAddressRaw, setNewAddressRaw] = useState("");
-                    const [isUpdatingCompleted, setIsUpdatingCompleted] = useState(false);
-
-                    const triggerAutocomplete = async (val: string) => {
-                      setSearchInGroup(val);
-                      if (!val.trim()) {
-                        setSuggestions([]);
-                        return;
-                      }
-                      try {
-                        const token = import.meta.env.VITE_MAPBOX_TOKEN;
-                        const res = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(val)}.json?access_token=${token}&country=IN&limit=5`);
-                        const data = await res.json();
-                        if (data && data.features) {
-                          setSuggestions(data.features);
-                        }
-                      } catch (e) {
-                        console.error(e);
-                      }
-                    };
-
-                    const handleSaveUpdatedAddress = async () => {
-                      if (!newAddressRaw) {
-                        alert("Please pick or type a valid address from recommendations block first.");
-                        return;
-                      }
-
-                      const finalString = `${newHouseNo ? newHouseNo + ", " : ""}${newAddressRaw}`;
+                  <div className="space-y-3">
+                    <div className="space-y-1 relative">
+                      <input
+                        type="text"
+                        placeholder="Type colony, apartment complex or city..."
+                        value={addressSearch}
+                        onChange={(e) => triggerAddressAutocomplete(e.target.value)}
+                        className="w-full px-3 py-2 text-xs border border-neutral-300 rounded-lg focus:ring-1 focus:ring-brand-green focus:outline-none bg-neutral-50 text-neutral-900 font-medium"
+                      />
                       
-                      if (supabase && userEmail) {
-                        await supabase
-                          .from("users")
-                          .update({ phone: finalString })
-                          .eq("email", userEmail.toLowerCase());
-                      }
-
-                      setDeliveryAddress(finalString);
-                      setIsUpdatingCompleted(true);
-                      setTimeout(() => {
-                        setIsUpdatingCompleted(false);
-                        setSearchInGroup("");
-                        // Trigger force state update inside parent seamlessly
-                        setSelectedCategory((prev) => prev); 
-                      }, 1200);
-                    };
-
-                    return (
-                      <div className="space-y-3">
-                        <div className="space-y-1 relative">
-                          <input
-                            type="text"
-                            placeholder="Type colony, apartment complex or city..."
-                            value={searchInGroup}
-                            onChange={(e) => triggerAutocomplete(e.target.value)}
-                            className="w-full px-3 py-2 text-xs border border-neutral-300 rounded-lg focus:ring-1 focus:ring-brand-green focus:outline-none bg-neutral-50 text-neutral-900 font-medium"
-                          />
-                          
-                          {suggestions.length > 0 && (
-                            <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-neutral-200 rounded-lg shadow-xl z-50 max-h-36 overflow-y-auto divide-y divide-neutral-100">
-                              {suggestions.map((feat) => (
-                                <button
-                                  key={feat.id}
-                                  type="button"
-                                  onClick={() => {
-                                    setNewAddressRaw(feat.place_name);
-                                    setSearchInGroup(feat.place_name);
-                                    setSuggestions([]);
-                                  }}
-                                  className="w-full text-left p-2 hover:bg-neutral-50 text-[10px] font-medium text-neutral-700 truncate block"
-                                >
-                                  📍 {feat.place_name}
-                                </button>
-                              ))}
-                            </div>
-                          )}
+                      {addressSuggestions.length > 0 && (
+                        <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-neutral-200 rounded-lg shadow-xl z-50 max-h-36 overflow-y-auto divide-y divide-neutral-100">
+                          {addressSuggestions.map((feat) => (
+                            <button
+                              key={feat.id}
+                              type="button"
+                              onClick={() => {
+                                setAddressSelection(feat.place_name);
+                                setAddressSearch(feat.place_name);
+                                setAddressSuggestions([]);
+                              }}
+                              className="w-full text-left p-2 hover:bg-neutral-50 text-[10px] font-medium text-neutral-700 truncate block"
+                            >
+                              📍 {feat.place_name}
+                            </button>
+                          ))}
                         </div>
+                      )}
+                    </div>
 
-                        <div className="grid grid-cols-2 gap-2">
-                          <input
-                            type="text"
-                            placeholder="Flat / Floor / House No."
-                            value={newHouseNo}
-                            onChange={(e) => setNewHouseNo(e.target.value)}
-                            className="px-3 py-1.5 text-xs border border-neutral-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-brand-green bg-neutral-50 text-neutral-900 font-medium"
-                          />
-                          <button
-                            type="button"
-                            onClick={handleSaveUpdatedAddress}
-                            className="bg-brand-green hover:bg-brand-green/95 text-white font-extrabold text-[10px] rounded-lg uppercase tracking-wider transition-all duration-200 cursor-pointer flex items-center justify-center"
-                          >
-                            {isUpdatingCompleted ? "✓ Saved Successfully" : "Update Address"}
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })()}
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        type="text"
+                        placeholder="Flat / Floor / House No."
+                        value={addressHouseNo}
+                        onChange={(e) => setAddressHouseNo(e.target.value)}
+                        className="px-3 py-1.5 text-xs border border-neutral-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-brand-green bg-neutral-50 text-neutral-900 font-medium"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleSaveUpdatedAddress}
+                        disabled={!addressSelection}
+                        className="bg-brand-green hover:bg-brand-green/95 disabled:cursor-not-allowed disabled:opacity-60 text-white font-extrabold text-[10px] rounded-lg uppercase tracking-wider transition-all duration-200 cursor-pointer flex items-center justify-center"
+                      >
+                        {addressSaved ? "Saved" : "Update Address"}
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
                 {/* Danger logout card strictly safe */}

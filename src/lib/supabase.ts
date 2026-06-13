@@ -9,6 +9,12 @@ export const supabase = supabaseUrl && supabaseAnonKey
   ? createClient(supabaseUrl, supabaseAnonKey)
   : null;
 
+export interface AuthActionResult {
+  success: boolean;
+  message?: string;
+  requiresEmailConfirmation?: boolean;
+}
+
 // Fetch live users from Supabase
 export async function fetchRegisteredUsers(): Promise<any[]> {
   if (!supabase) return [];
@@ -114,46 +120,105 @@ export async function registerNewUser(user: {
   name: string; 
   password?: string;
   phone?: string;
-}) {
+}): Promise<AuthActionResult> {
   const normalizedEmail = user.email.toLowerCase();
 
-  if (supabase) {
-    try {
-      // 1. Trigger Supabase auth signUp if password specified
-      if (user.password) {
-        const { error: signUpError } = await supabase.auth.signUp({
-          email: normalizedEmail,
-          password: user.password,
-          options: {
-            data: { 
-              name: user.name, 
-              phone: user.phone || ""
-            }
-          }
-        });
+  if (!supabase) {
+    return {
+      success: false,
+      message: "Supabase authentication is not configured."
+    };
+  }
 
-        if (signUpError) {
-          console.warn("Auth signup notice:", signUpError.message);
+  if (!user.password) {
+    return {
+      success: false,
+      message: "A password is required to create an account."
+    };
+  }
+
+  try {
+    const { data, error: signUpError } = await supabase.auth.signUp({
+      email: normalizedEmail,
+      password: user.password,
+      options: {
+        data: {
+          name: user.name,
+          phone: user.phone || ""
         }
       }
-    } catch (e) {
-      console.error("Supabase user register error:", e);
+    });
+
+    if (signUpError) {
+      return { success: false, message: signUpError.message };
     }
+
+    return {
+      success: true,
+      requiresEmailConfirmation: !data.session
+    };
+  } catch (e: any) {
+    console.error("Supabase user register error:", e);
+    return {
+      success: false,
+      message: e?.message || "Failed to create the account."
+    };
   }
 }
 
-// Change user password
-export async function updateUserPasswordInDB(email: string, newPassword: string): Promise<boolean> {
-  if (supabase) {
-    try {
-      // The secure database handles password verification through authenticating users direct.
-      // Therefore, we don't try to manually update passwords inside public.users.
-      return true;
-    } catch (e) {
-      console.error(e);
-    }
+export async function sendPasswordResetEmail(email: string, redirectTo?: string): Promise<AuthActionResult> {
+  if (!supabase) {
+    return {
+      success: false,
+      message: "Supabase authentication is not configured."
+    };
   }
-  return true;
+
+  try {
+    const { error } = await supabase.auth.resetPasswordForEmail(email.toLowerCase(), {
+      redirectTo
+    });
+
+    if (error) {
+      return { success: false, message: error.message };
+    }
+
+    return {
+      success: true,
+      message: "Password reset instructions have been sent if the account exists."
+    };
+  } catch (e: any) {
+    console.error("sendPasswordResetEmail error:", e);
+    return {
+      success: false,
+      message: e?.message || "Failed to send password reset instructions."
+    };
+  }
+}
+
+// Change password for an authenticated recovery session.
+export async function updateUserPasswordInDB(newPassword: string): Promise<AuthActionResult> {
+  if (!supabase) {
+    return {
+      success: false,
+      message: "Supabase authentication is not configured."
+    };
+  }
+
+  try {
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) {
+      return { success: false, message: error.message };
+    }
+
+    return { success: true };
+  } catch (e: any) {
+    console.error("updateUserPasswordInDB error:", e);
+    return {
+      success: false,
+      message: e?.message || "Failed to update the password."
+    };
+  }
 }
 
 // --- Orders database persistence ---
